@@ -74,7 +74,7 @@ class MetadataTests(unittest.TestCase):
 
     def test_python_library_is_a_pack_requirement(self):
         requirements = (PACK_ROOT / "requirements.txt").read_text(encoding="utf-8")
-        self.assertIn("yt-dlp>=", requirements)
+        self.assertIn("yt-dlp[default]>=2025.1.15,<2027.0.0", requirements)
         source = (PACK_ROOT / "sensors" / "media_availability_sensor.py").read_text(encoding="utf-8")
         self.assertNotIn("subprocess", source)
         self.assertNotIn("releases/latest/download", source)
@@ -118,6 +118,7 @@ class SensorTests(unittest.TestCase):
         entries = self.sensor.discover("https://www.youtube.com/@example/streams", 15, 20)
         self.assertEqual(len(entries), 1)
         options = FakeYoutubeDL.instances[0].options
+        self.assertEqual(options["js_runtimes"], {"node": {"path": None}})
         self.assertEqual(options["playlistend"], 20)
         self.assertEqual(options["socket_timeout"], 15)
         identity, status, payload = self.sensor.normalize(entries[0], "https://www.youtube.com/@example/streams", "2026-08-31T00:00:00Z")
@@ -184,6 +185,7 @@ class ActionTests(unittest.TestCase):
         options = FakeYoutubeDL.instances[0].options
         self.assertTrue(FakeYoutubeDL.instances[0].download)
         self.assertEqual(options["format"], "best")
+        self.assertEqual(options["js_runtimes"], {"node": {"path": None}})
         self.assertEqual(options["merge_output_format"], "mkv")
         self.assertTrue(options["noplaylist"])
         self.assertEqual(result["media_count"], 1)

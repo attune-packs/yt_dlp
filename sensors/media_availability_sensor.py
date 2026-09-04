@@ -56,6 +56,11 @@ def discover(source_url: str, timeout_seconds: int, max_entries: int) -> list[di
     options = {
         "extract_flat": "in_playlist",
         "ignoreerrors": True,
+        "js_runtimes": {
+            "node": {
+                "path": None,
+            },
+        },
         "lazy_playlist": False,
         "playlistend": max_entries,
         "quiet": True,

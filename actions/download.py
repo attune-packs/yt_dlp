@@ -130,7 +130,14 @@ def download(params: dict[str, Any], artifacts_root: Path, ydl_type: type = yt_d
         if event.get("status") == "finished" and isinstance(filename, str):
             finished_files.append(str(Path(filename).resolve()))
 
-    options = dict(extra)
+    options = {
+        "js_runtimes": {
+            "node": {
+                "path": None,
+            },
+        },
+    }
+    options.update(extra)
     options.update({
         "logger": _Logger(),
         "noplaylist": not _boolean(params, "playlist", False),
