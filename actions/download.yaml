@@ -1,0 +1,63 @@
+ref: yt_dlp.download
+label: "Download Media"
+description: "Downloads on-demand media or records a live stream through the yt-dlp Python library"
+enabled: true
+runner_type: python
+runtime_version: ">=3.10"
+entry_point: download.py
+parameter_delivery: stdin
+parameter_format: json
+output_format: json
+
+parameters:
+  url:
+    type: string
+    description: "HTTP or HTTPS media or playlist URL"
+    required: true
+  output_directory:
+    type: string
+    description: "Directory below ATTUNE_ARTIFACTS_DIR used for downloaded files"
+    default: downloads
+    required: true
+  output_template:
+    type: string
+    description: "yt-dlp output template relative to output_directory"
+    default: "%(extractor)s/%(uploader)s/%(title)s [%(id)s].%(ext)s"
+    required: true
+  format:
+    type: string
+    description: "Optional yt-dlp format selector"
+  playlist:
+    type: boolean
+    description: "Allow the URL to download all playlist entries"
+    default: false
+  overwrite:
+    type: boolean
+    description: "Replace existing files"
+    default: false
+  download_archive:
+    type: string
+    description: "Optional archive filename below output_directory for cross-execution deduplication"
+  yt_dlp_options:
+    type: object
+    description: "Additional JSON-serializable YoutubeDL options; managed paths, credentials, callbacks, postprocessors, and external executables are rejected"
+    default: {}
+
+output:
+  media:
+    type: array
+    required: true
+  files:
+    type: array
+    required: true
+  media_count:
+    type: integer
+    required: true
+  file_count:
+    type: integer
+    required: true
+  output_directory:
+    type: string
+    required: true
+
+tags: [media, download, streaming, archive]

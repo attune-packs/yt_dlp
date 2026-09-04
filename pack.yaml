@@ -1,0 +1,42 @@
+ref: yt_dlp
+label: "yt-dlp Media"
+description: "Media availability monitoring and downloads backed by the yt-dlp Python library"
+version: "0.1.0"
+author: "Attune"
+email: "support@attune.systems"
+license: "Apache-2.0"
+system: false
+enabled: true
+
+conf_schema: {}
+config: {}
+
+meta:
+  category: integration
+  documentation_url: "https://github.com/yt-dlp/yt-dlp"
+  repository_url: "https://github.com/attune-packs/yt_dlp"
+  source_repository: "https://github.com/nexus9560/Auto-Archiver"
+  license: "Apache-2.0"
+  keywords:
+    - media
+    - streaming
+    - archive
+    - yt-dlp
+
+tags: [media, streaming, archive, yt-dlp]
+runtime_deps: [python]
+dependencies: []
+
+testing:
+  enabled: true
+  discovery:
+    method: directory
+    path: tests
+  runners:
+    python:
+      type: unittest
+      entry_point: tests/test_pack.py
+      timeout: 60
+      result_format: simple
+  min_pass_rate: 1.0
+  on_failure: block
