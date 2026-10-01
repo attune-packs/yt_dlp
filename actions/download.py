@@ -2,12 +2,16 @@
 from __future__ import annotations
 
 import json
+import mimetypes
 import os
 from pathlib import Path
+import shutil
 import sys
+import tempfile
 from typing import Any, Iterable
 from urllib.parse import urlparse
 
+import attune
 import yt_dlp
 
 
@@ -21,8 +25,10 @@ MANAGED_OPTIONS = {
     "external_downloader",
     "external_downloader_args",
     "ffmpeg_location",
+    "force_write_download_archive",
     "load_info_filename",
     "logger",
+    "js_runtimes",
     "netrc_location",
     "noplaylist",
     "outtmpl",
@@ -31,7 +37,8 @@ MANAGED_OPTIONS = {
     "paths",
     "postprocessors",
     "postprocessor_hooks",
-    "progress_hooks",
+    "post_hooks",
+    "print_to_file",
     "quiet",
     "simulate",
     "skip_download",
@@ -69,18 +76,6 @@ def _required_url(params: dict[str, Any]) -> str:
     return value
 
 
-def _relative_path(params: dict[str, Any], name: str, default: str | None = None) -> Path | None:
-    value = params.get(name, default)
-    if value is None or value == "":
-        return None
-    if not isinstance(value, str) or "\x00" in value:
-        raise ActionError(f"{name} must be a path string")
-    path = Path(value)
-    if path.is_absolute() or ".." in path.parts:
-        raise ActionError(f"{name} must stay below the action artifact directory")
-    return path
-
-
 def _boolean(params: dict[str, Any], name: str, default: bool) -> bool:
     value = params.get(name, default)
     if not isinstance(value, bool):
@@ -103,47 +98,45 @@ def _media_summary(entry: dict[str, Any]) -> dict[str, Any]:
     return {name: entry[name] for name in fields if entry.get(name) is not None}
 
 
-def download(params: dict[str, Any], artifacts_root: Path, ydl_type: type = yt_dlp.YoutubeDL) -> dict[str, Any]:
+def download(params: dict[str, Any], staging_directory: Path, ydl_type: type = yt_dlp.YoutubeDL) -> dict[str, Any]:
     url = _required_url(params)
-    output_relative = _relative_path(params, "output_directory", "downloads")
-    assert output_relative is not None
-    output_directory = (artifacts_root / output_relative).resolve()
-    root = artifacts_root.resolve()
-    if output_directory != root and root not in output_directory.parents:
-        raise ActionError("output_directory escapes ATTUNE_ARTIFACTS_DIR")
-    output_directory.mkdir(parents=True, exist_ok=True)
+    staging_directory = staging_directory.resolve()
+    staging_directory.mkdir(parents=True, exist_ok=True)
 
-    template = params.get("output_template", "%(extractor)s/%(uploader)s/%(title)s [%(id)s].%(ext)s")
-    if not isinstance(template, str) or not template or Path(template).is_absolute() or ".." in Path(template).parts:
-        raise ActionError("output_template must stay below output_directory")
+    template = params.get("filename_template", "%(title)s [%(id)s].%(ext)s")
+    if (
+        not isinstance(template, str)
+        or not template
+        or "\x00" in template
+        or "/" in template
+        or "\\" in template
+        or template in {".", ".."}
+    ):
+        raise ActionError("filename_template must not contain directory components")
     extra = params.get("yt_dlp_options", {})
     if not isinstance(extra, dict):
         raise ActionError("yt_dlp_options must be an object")
     conflicts = MANAGED_OPTIONS.intersection(extra)
+    conflicts.update(name for name in extra if name.startswith("write"))
     if conflicts:
         raise ActionError(f"yt_dlp_options contains managed field: {sorted(conflicts)[0]}")
 
     finished_files: list[str] = []
 
-    def progress(event: dict[str, Any]) -> None:
-        filename = event.get("filename")
-        if event.get("status") == "finished" and isinstance(filename, str):
-            finished_files.append(str(Path(filename).resolve()))
+    def finished(filename: str) -> None:
+        finished_files.append(str(Path(filename).resolve()))
 
-    options = {
+    options = dict(extra)
+    options.update({
         "js_runtimes": {
             "node": {
                 "path": None,
             },
         },
-    }
-    options.update(extra)
-    options.update({
+        "post_hooks": [finished],
         "logger": _Logger(),
         "noplaylist": not _boolean(params, "playlist", False),
-        "outtmpl": str(output_directory / template),
-        "overwrites": _boolean(params, "overwrite", False),
-        "progress_hooks": [progress],
+        "outtmpl": str(staging_directory / template),
         "quiet": True,
     })
     format_selector = params.get("format")
@@ -151,14 +144,6 @@ def download(params: dict[str, Any], artifacts_root: Path, ydl_type: type = yt_d
         if not isinstance(format_selector, str) or not format_selector:
             raise ActionError("format must be a non-empty string")
         options["format"] = format_selector
-    archive_relative = _relative_path(params, "download_archive")
-    if archive_relative is not None:
-        archive_path = (output_directory / archive_relative).resolve()
-        if archive_path != output_directory and output_directory not in archive_path.parents:
-            raise ActionError("download_archive escapes output_directory")
-        archive_path.parent.mkdir(parents=True, exist_ok=True)
-        options["download_archive"] = str(archive_path)
-
     with ydl_type(options) as downloader:
         info = downloader.extract_info(url, download=True)
     if not isinstance(info, dict):
@@ -169,9 +154,50 @@ def download(params: dict[str, Any], artifacts_root: Path, ydl_type: type = yt_d
         "media": media,
         "files": files,
         "media_count": len(media),
-        "file_count": len(files),
-        "output_directory": str(output_directory),
     }
+
+
+def register_files(files: list[str], execution_id: str, allocator=attune.artifacts.allocate_file_version) -> list[dict[str, Any]]:
+    artifacts = []
+    for index, filename in enumerate(files, start=1):
+        source = Path(filename)
+        if not source.is_file():
+            raise ActionError(f"downloaded media file is missing: {source.name}")
+        content_type = mimetypes.guess_type(source.name)[0] or "application/octet-stream"
+        allocation = allocator(
+            f"yt_dlp.download.media.{execution_id}.{index}",
+            artifact_type="file_binary",
+            visibility="private",
+            content_type=content_type,
+            name=source.name,
+            description="Media downloaded by yt_dlp.download",
+        )
+        shutil.move(source, allocation.absolute_path)
+        artifacts.append({
+            "artifact_id": allocation.artifact_id,
+            "artifact_ref": allocation.artifact_ref,
+            "version_id": allocation.version_id,
+            "name": source.name,
+            "content_type": content_type,
+        })
+    return artifacts
+
+
+def execute(
+    params: dict[str, Any],
+    artifacts_root: Path,
+    execution_id: str,
+    ydl_type: type = yt_dlp.YoutubeDL,
+    allocator=attune.artifacts.allocate_file_version,
+) -> dict[str, Any]:
+    staging_root = artifacts_root.resolve() / ".staging"
+    staging_root.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix=f"yt-dlp-{execution_id}-", dir=staging_root) as directory:
+        result = download(params, Path(directory), ydl_type)
+        registered = register_files(result.pop("files"), execution_id, allocator)
+    result["artifact_count"] = len(registered)
+    result["artifacts"] = registered
+    return result
 
 
 def main() -> int:
@@ -180,10 +206,12 @@ def main() -> int:
         params = json.loads(raw) if raw.strip() else {}
         if not isinstance(params, dict):
             raise ActionError("parameters must be a JSON object")
+        if not attune.context.has_api_token:
+            raise ActionError("artifact registration requires an execution-scoped API token")
         artifacts = os.environ.get("ATTUNE_ARTIFACTS_DIR")
         if not artifacts:
             raise ActionError("ATTUNE_ARTIFACTS_DIR is required")
-        result = download(params, Path(artifacts))
+        result = execute(params, Path(artifacts), str(attune.context.execution_id))
         print(json.dumps(result, separators=(",", ":")))
         return 0
     except (ActionError, json.JSONDecodeError) as exc:

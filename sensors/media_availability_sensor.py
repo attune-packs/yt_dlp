@@ -16,6 +16,7 @@ import yt_dlp
 
 
 TRIGGER_REF = "yt_dlp.media_available"
+LIVE_STATUSES = frozenset({"is_live", "is_upcoming", "was_live", "post_live", "not_live", "unknown"})
 
 
 def _required_url(values: dict[str, Any]) -> str:
@@ -39,6 +40,9 @@ def _statuses(values: dict[str, Any]) -> set[str]:
     statuses = values.get("live_statuses", ["is_live", "is_upcoming"])
     if not isinstance(statuses, list) or not statuses or any(not isinstance(item, str) or not item for item in statuses):
         raise ValueError("live_statuses must be a non-empty array of strings")
+    unsupported = set(statuses).difference(LIVE_STATUSES)
+    if unsupported:
+        raise ValueError(f"live_statuses contains unsupported value: {sorted(unsupported)[0]}")
     return set(statuses)
 
 
@@ -52,7 +56,7 @@ def _entries(info: dict[str, Any]) -> Iterable[dict[str, Any]]:
     yield info
 
 
-def discover(source_url: str, timeout_seconds: int, max_entries: int) -> list[dict[str, Any]]:
+def discover(source_url: str, socket_timeout_seconds: int, max_entries: int) -> list[dict[str, Any]]:
     options = {
         "extract_flat": "in_playlist",
         "ignoreerrors": True,
@@ -65,7 +69,7 @@ def discover(source_url: str, timeout_seconds: int, max_entries: int) -> list[di
         "playlistend": max_entries,
         "quiet": True,
         "no_warnings": True,
-        "socket_timeout": timeout_seconds,
+        "socket_timeout": socket_timeout_seconds,
     }
     with yt_dlp.YoutubeDL(options) as downloader:
         info = downloader.extract_info(source_url, download=False)
@@ -163,7 +167,7 @@ class MediaAvailabilitySensor(attune.PollingSensor):
             return
         try:
             source_url = _required_url(values)
-            timeout = _bounded_integer(values, "timeout_seconds", 30, 1, 600)
+            socket_timeout = _bounded_integer(values, "socket_timeout_seconds", 30, 1, 600)
             max_entries = _bounded_integer(values, "max_entries", 50, 1, 500)
             matching_statuses = _statuses(values)
             emit_initial = values.get("emit_initial", True)
@@ -173,7 +177,7 @@ class MediaAvailabilitySensor(attune.PollingSensor):
             states = _read_checkpoint(checkpoint)
             had_checkpoint = checkpoint.exists()
             discovered_at = dt.datetime.now(dt.timezone.utc).isoformat().replace("+00:00", "Z")
-            for entry in discover(source_url, timeout, max_entries):
+            for entry in discover(source_url, socket_timeout, max_entries):
                 identity, live_status, payload = normalize(entry, source_url, discovered_at)
                 previous = states.get(identity)
                 should_emit = live_status in matching_statuses and previous != live_status and (had_checkpoint or emit_initial)
